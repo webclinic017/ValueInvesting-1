@@ -1,15 +1,16 @@
-import requests
-import symbol
 import json
 import time
-from backoff import on_exception, expo
 from ratelimit import limits, RateLimitException, sleep_and_retry
 import requests
 from datetime import date, timedelta, datetime
 import logging
+import sys
+from sql_queries import *
+from stock_database import StockDatabase
 
 API_PERIOD = 60
 API_CALL = 50
+
 
 class ValueInvesting:
     def __init__(self):
@@ -34,16 +35,54 @@ class ValueInvesting:
         self.medium_cap_companies_result = list()
         self.large_cap_companies_result = list()
         self.currency_quote = self.get_fx_for_curr()
+        self.stock_db = StockDatabase()
+        self.rundate = int(datetime.now().strftime('%Y%m%d'))
+        self.set_exchange()
 
     def main(self):
-        self.get_ranking_data()
+        self.apply_magic_formula()
         self.rank_earning_yield()
         self.rank_roc()
         self.rank_final()
         self.sort_by_cap()
         self.save_result()
+        self.write_result_to_file()
+
+    def set_exchange(self):
+        self.exchange = sys.argv[1]
+
+    def run(self):
+        if sys.argv[2] == 'TEST':
+            self.test_run()
+        else:
+            self.main()
+
+    def test_run(self):
+        self.stock_db.create_test_tables()
+        self.apply_magic_formula(True)
+        self.rank_earning_yield()
+        self.rank_roc()
+        self.rank_final()
+        self.sort_by_cap()
+        self.save_result(True)
+        self.write_result_to_file(True)
+
+    def if_exchange_in_db(self):
+        statement = """
+                    SELECT * FROM companyInfo i
+                    where i.exchange=%s;
+                    """ % self.exchange
+        result = self.stock_db.execute_command(statement)
+        if len(result) > 0:
+            return True
+        else:
+            return False
 
     def rank_earning_yield(self):
+        """
+        ranks companies via the earning yield
+        :return:
+        """
         logging.info("Ranking companies via earning yield")
         i = 0
         ranked_earning_yield = sorted(self.earning_yield_rank.items(), key=lambda x: (x[1]), reverse=True)
@@ -54,6 +93,10 @@ class ValueInvesting:
             i += 1
 
     def rank_roc(self):
+        """
+        ranks companies via the return on capital
+        :return:
+        """
         logging.info("Ranking companies via ROC")
         i = 0
         ranked_roc = sorted(self.roc_rank.items(), key=lambda x: (x[1]), reverse=True)
@@ -64,6 +107,10 @@ class ValueInvesting:
             i += 1
 
     def rank_final(self):
+        """
+        As per the magic formula, the final rank is the summation of the roc and earning yield rank
+        :return:
+        """
         final_rank_list = dict()
         for key, value in self.result.items():
             final_rank = value["earning_rank"] + value["roc_rank"]
@@ -80,24 +127,26 @@ class ValueInvesting:
             i += 1
         print(self.final_rank)
 
-    def get_ranking_data(self):
-        logging.info("Extracting company's financial")
-        iter_list = iter(self.stocks)
-        while True:
-            try:
-                iter_obj = next(iter_list)
-                self.get_market_data(iter_obj)
-            except StopIteration:
-                break
+    def apply_magic_formula(self, version=False):
+        list_of_stocks = self.stock_db.get_stocks_per_exchange(self.exchange, version)
+        for stock in list_of_stocks:
+            dict_stock = {'name': stock[1], 'ticker': stock[2], 'description': stock[3], 'industry': stock[4],
+                          'marketCapitalization': stock[5]}
+            self.get_market_data(dict_stock)
 
     def get_market_data(self, company):
+        """
+        For each stock, get financial statements and calculates the return on Capital and earning yield
+        :param company:
+        :return:
+        """
         try:
             symbol = company['ticker']
             key_statistic = self.make_api_call_yahoo_finance(self.url_key_statistics % symbol)
             balance_sheet = self.make_api_call_yahoo_finance(self.url_balance_sheet % symbol)
             income_statement = self.make_api_call_yahoo_finance(self.url_income_statement % symbol)
             market_quote = self.make_api_call_yahoo_finance(self.url_market_quote % symbol)
-            if self.financial_statement_is_old(balance_sheet,income_statement) or self.stock_is_illquid(market_quote):
+            if self.financial_statement_is_old(balance_sheet, income_statement) or self.stock_is_illquid(market_quote):
                 return
 
             ebit = self.get_ttm_ebit(income_statement)
@@ -121,6 +170,11 @@ class ValueInvesting:
             pass
 
     def get_ttm_ebit(self, income_statement):
+        """
+        Gets trailing twelve month earning before interest and tax
+        :param income_statement:
+        :return:
+        """
         ebit = 0
         quarterly_list = income_statement["incomeStatementHistoryQuarterly"]["incomeStatementHistory"]
         if len(quarterly_list) != 4:
@@ -130,10 +184,21 @@ class ValueInvesting:
         return ebit
 
     def get_total_fixed_asset(self, balance_sheet):
+        """
+        Utility method to return total fixed asset from balance sheet for a company
+        :param balance_sheet:
+        :return:
+        """
         return balance_sheet["balanceSheetHistoryQuarterly"]["balanceSheetStatements"][0]["propertyPlantEquipment"][
             "raw"]
 
     def get_working_capital(self, balance_sheet):
+        """
+        Calculates the working capital of a company
+        Formula: total_current_asset - total_current_liability
+        :param balance_sheet:
+        :return:
+        """
         total_current_asset = \
             balance_sheet["balanceSheetHistoryQuarterly"]["balanceSheetStatements"][0]["totalCurrentAssets"]["raw"]
         total_current_liability = \
@@ -141,51 +206,58 @@ class ValueInvesting:
         return total_current_asset - total_current_liability
 
     def get_enterprise_value(self, key_statistic):
+        """
+        Utility method to get current enterprise value for a company
+        :param key_statistic:
+        :return:
+        """
         return key_statistic["defaultKeyStatistics"]["enterpriseValue"]["raw"]
 
-    def get_stock_list(self, list_of_stocks):
+    def get_stock_via_api(self, exchange):
+        """
+        gets all stocks from an exchange using an API
+        :param exchange:
+        :return:
+        """
+        logging.info('Grabbing full ist of stocks from Exchange.\n Exchange code:"%s' % exchange)
+        list_of_stocks = self.get_stocks_from_exchange(exchange)
         iter_onj = iter(list_of_stocks)
         while True:
             try:
                 element = next(iter_onj)
-                self.add_company(element)
+                self.add_company(element, exchange)
             except StopIteration:
                 break
-
-
-    def get_stock_via_api(self, exchange):
-        logging.info('Grabbing full ist of stocks from Exchange.\n Exchange code:"%s' % exchange)
-        list_of_stocks = self.get_stocks_from_exchange(exchange)
-        self.get_stock_list(list_of_stocks)
-
-
-
-    def get_stock_via_file(self, file):
-        logging.info('Grabbing full ist of stocks from file.\n File name:"%s' % file)
-        with open(file, 'r') as f:
-            list_of_stocks = json.load(f)
-            self.get_stock_list(list_of_stocks)
-
 
     def get_stocks_from_exchange(self, exchange):
         return requests.get(
             'https://finnhub.io/api/v1/stock/symbol?exchange=%s&token=%s' % (exchange, self.finhub_api_key)).json()
 
-    def add_company(self, element):
+    def add_company(self, company, exchange):
+        """
+        For any exchange, exclude stocks based on certain criterias such as industry or deposit receipt company
+        :param company:
+        :return:
+        """
         try:
-            symbol = element['symbol']
+            symbol = company['symbol']
             company_info = self.make_api_call_finhub(
-                'https://finnhub.io/api/v1/stock/profile2?symbol=%s&token=%s' % (symbol,self.finhub_api_key))
+                'https://finnhub.io/api/v1/stock/profile2?symbol=%s&token=%s' % (symbol, self.finhub_api_key))
             if not company_info:
                 pass
             else:
-                if company_info["finnhubIndustry"] == 'Utilities' or company_info["finnhubIndustry"] == 'Financial Services' \
+                if company_info["finnhubIndustry"] == 'Utilities' or company_info[
+                    "finnhubIndustry"] == 'Financial Services' \
                         or 'ADR' in company_info["name"]:
                     return
                 else:
-                    company = {"description": element["description"], "ticker": element['symbol'],
+                    company = {"description": company["description"], "ticker": company_info['ticker'],
                                "marketCapitalization":
                                    company_info["marketCapitalization"], "industry": company_info["finnhubIndustry"]}
+
+                    stock = (company_info["name"], company_info['ticker'], company["description"],
+                             company_info["finnhubIndustry"], company_info["marketCapitalization"], exchange)
+                    self.stock_db.add_stock_to_db(stock)
                     self.stocks.append(company)
         except Exception as e:
             time.sleep(5)
@@ -193,6 +265,11 @@ class ValueInvesting:
     @sleep_and_retry
     @limits(calls=60, period=60)
     def make_api_call_finhub(self, url):
+        """
+        API call to get all stocks trading in an exchange
+        :param url:
+        :return:
+        """
         response = requests.get(url)
         if response.status_code != 200:
             raise Exception('API response: {}'.format(response.status_code))
@@ -201,12 +278,22 @@ class ValueInvesting:
     @sleep_and_retry
     @limits(calls=API_CALL, period=API_PERIOD)
     def make_api_call_yahoo_finance(self, url):
+        """
+        API call to get data such as financial statements or key statistics about a company via
+        yahoo finance
+        :param url:
+        :return:
+        """
         response = requests.request("GET", url, headers=self.headers)
         if response.status_code != 200:
             raise Exception('API response: {}'.format(response.status_code))
         return response.json()
 
     def sort_by_cap(self):
+        """
+        Divide ranked companies into market capitilisation
+        :return:
+        """
         logging.info("Sort Rank by Market Capitalisation")
         for element in self.final_rank:
             if element["marketCapitilisation"] <= 2000:
@@ -216,36 +303,84 @@ class ValueInvesting:
             else:
                 self.large_cap_companies_result.append(element)
 
-
-    def save_result(self):
+    def write_result_to_file(self, test=False):
+        """
+        save results into a file
+        :return:
+        """
         logging.info("Writing result to file")
-        self.write_file(r"C:\Users\user\Google Drive\value_investing\small_cap_ranked_stocks.json",self.small_cap_companies_result)
-        self.write_file(r"C:\Users\user\Google Drive\value_investing\mid_cap_ranked_stocks.json", self.medium_cap_companies_result)
-        self.write_file(r"C:\Users\user\Google Drive\value_investing\large_cap_ranked_stocks.json", self.large_cap_companies_result)
-        self.write_file(r"C:\Users\user\Google Drive\value_investing\final_ranked_stocks.json", self.final_rank)
+        if not test:
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\prod\small_cap_ranked_stocks.json",
+                            self.small_cap_companies_result)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\prod\mid_cap_ranked_stocks.json",
+                            self.medium_cap_companies_result)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\prod\large_cap_ranked_stocks.json",
+                            self.large_cap_companies_result)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\prod\final_ranked_stocks.json",
+                            self.final_rank)
+        else:
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\test\small_cap_ranked_stocks.json",
+                            self.small_cap_companies_result)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\test\mid_cap_ranked_stocks.json",
+                            self.medium_cap_companies_result)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\test\large_cap_ranked_stocks.json",
+                            self.large_cap_companies_result)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\test\final_ranked_stocks.json",
+                            self.final_rank)
 
-    def write_file(self, file,ranked_stock):
+    def save_result(self, version=False):
+        try:
+            for stock in self.final_rank:
+                result = (
+                self.rundate, stock['symbol'], stock['ebit'], stock['total_fixed_asset'], stock['working_capital'],
+                stock['enterprise_value'], stock['earning_yield'], stock['roc'], stock['earning_rank'],
+                stock['roc_rank'],
+                stock['final_rank'])
+                self.stock_db.insert_into_ranked_result(result, version)
+        except Exception as e:
+            print(e)
+
+    def write_file(self, file, ranked_stock):
         with open(file, 'w') as f:
             json.dump(ranked_stock, f, indent=4)
 
-
     def date_is_old(self, epoch):
+        """
+        Checks if company has not published a financial statement for more than six months.
+        :param epoch:
+        :return:
+        """
         six_months_from_now = (datetime.today() - timedelta(weeks=24)).timestamp()
         if epoch < six_months_from_now:
             return True
         else:
             return False
 
-    def financial_statement_is_old(self, balance_sheet,income_statement):
-        first_income_statment_date = income_statement["incomeStatementHistoryQuarterly"]["incomeStatementHistory"][0]["endDate"]["raw"]
-        first_balance_sheet_date = balance_sheet["balanceSheetHistoryQuarterly"]["balanceSheetStatements"][0]["endDate"]["raw"]
+    def financial_statement_is_old(self, balance_sheet, income_statement):
+        """
+        Checks if company has not published a financial statement for more than six months.
+        Such companies are to be excluded from being ranked
+        :param balance_sheet:
+        :param income_statement:
+        :return:
+        """
+        first_income_statment_date = \
+            income_statement["incomeStatementHistoryQuarterly"]["incomeStatementHistory"][0]["endDate"]["raw"]
+        first_balance_sheet_date = \
+            balance_sheet["balanceSheetHistoryQuarterly"]["balanceSheetStatements"][0]["endDate"]["raw"]
 
         if self.date_is_old(first_balance_sheet_date) or self.date_is_old(first_income_statment_date):
             return True
         else:
             return False
 
-    def stock_is_illquid(self,market_quote):
+    def stock_is_illquid(self, market_quote):
+        """
+        Checks the liquidity of a stocks by using finding the US Dollar value of the average trading volume.
+        The aim is to exclude illiquid stocks
+        :param market_quote:
+        :return:
+        """
         currency = market_quote[0]["currency"]
         avg_trading_vol = market_quote[0]["averageDailyVolume3Month"]
         stock_price = market_quote[0]["regularMarketPreviousClose"]
@@ -256,18 +391,25 @@ class ValueInvesting:
         else:
             return False
 
-
-    def get_fx(self,currency):
+    def get_fx(self, currency):
+        """
+        returns fx for a given currency pair with usd being the target currency
+        :param currency:
+        :return:
+        """
         if currency != "USD":
             currency_par_key = ("%susd:cur" % currency).lower()
             return float(self.currency_quote['result'][currency_par_key]["last"])
         else:
             return 1
 
-
     @sleep_and_retry
     @limits(calls=5, period=60)
     def get_fx_for_curr(self):
+        """
+        API call to get yesterday's close of all FX exchange
+        :return:
+        """
         url = "https://bloomberg-market-and-financial-news.p.rapidapi.com/market/get-cross-currencies"
         querystring = {
             "id": "aed%2Caud%2Cbrl%2Ccad%2Cchf%2Ccnh%2Ccny%2Ccop%2Cczk%2Cdkk%2Ceur%2Cgbp%2Chkd%2Chuf%2Cidr%2Cils%2Cinr%2Cjpy%2Ckrw%2Cmxn%2Cmyr%2Cnok%2Cnzd%2Cphp%2Cpln%2Crub%2Csek%2Csgd%2Cthb%2Ctry%2Ctwd%2Cusd%2Czar"}
@@ -280,5 +422,4 @@ class ValueInvesting:
 
 
 valueinvesting = ValueInvesting()
-valueinvesting.get_stock_via_api("L")
-valueinvesting.main()
+valueinvesting.run()
