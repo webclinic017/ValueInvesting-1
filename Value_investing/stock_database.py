@@ -48,6 +48,21 @@ class StockDatabase:
             conn = self.create_connection()
             c = conn.cursor()
             c.execute(prod_create_rankedResult_table)
+            conn.commit()
+        except Error as e:
+            print(e)
+
+    def create_historic_price_table(self):
+        """ create a historic prices table
+        :param conn: Connection object
+        :param create_table_sql: a CREATE TABLE statement
+        :return:
+        """
+        try:
+            conn = self.create_connection()
+            c = conn.cursor()
+            c.execute(prod_create_historic_prices_table)
+            conn.commit()
         except Error as e:
             print(e)
 
@@ -73,6 +88,7 @@ class StockDatabase:
             c.execute(test_delete_all_in_rankedResult)
             c.execute(test_delete_all_in_companyInfo)
             c.execute(test_insert_companyInfo)
+            conn.commit()
         except Error as e:
             print(e)
 
@@ -103,6 +119,15 @@ class StockDatabase:
         conn = self.create_connection()
         cur = conn.cursor()
         cur.execute(prod_delete_all_in_companyInfo)
+        conn.commit()
+
+    def delete_all_prices(self):
+        conn = self.create_connection()
+        cur = conn.cursor()
+        cur.execute(prod_delete_prices)
+        conn.commit()
+
+
 
     def delete_table(self, table):
         conn = self.create_connection()
@@ -133,6 +158,16 @@ class StockDatabase:
             print(e)
         return cur.lastrowid
 
+    def insert_historic_price(self, statement):
+        try:
+            conn = self.create_connection()
+            cur = conn.cursor()
+            cur.execute(prod_insert_historic_prices, statement)
+            conn.commit()
+        except Exception as e:
+            print(e)
+        return cur.lastrowid
+
     def get_stocks_per_exchange(self,exchange,test= False):
         try:
             conn = self.create_connection()
@@ -145,5 +180,16 @@ class StockDatabase:
         except Exception as e:
             print(e)
         return cur.fetchall()
+
+    def drop_historic_price_table(self):
+        try:
+            table = "historicPrices"
+            conn = self.create_connection()
+            cur = conn.cursor()
+            cur.execute(sql_drop_table % table)
+            conn.commit()
+        except Exception as e:
+            print(e)
+
 
 

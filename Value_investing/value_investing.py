@@ -125,10 +125,12 @@ class ValueInvesting:
             company_dict["final_rank"] = final_rank_temp[i][1]
             self.final_rank.append(company_dict)
             i += 1
-        print(self.final_rank)
 
     def apply_magic_formula(self, version=False):
+        logging.info("Applying Formula on Stock")
         list_of_stocks = self.stock_db.get_stocks_per_exchange(self.exchange, version)
+        if len(list_of_stocks) == 0:
+            self.get_stock_via_api()
         for stock in list_of_stocks:
             dict_stock = {'name': stock[1], 'ticker': stock[2], 'description': stock[3], 'industry': stock[4],
                           'marketCapitalization': stock[5]}
@@ -213,19 +215,19 @@ class ValueInvesting:
         """
         return key_statistic["defaultKeyStatistics"]["enterpriseValue"]["raw"]
 
-    def get_stock_via_api(self, exchange):
+    def get_stock_via_api(self):
         """
         gets all stocks from an exchange using an API
         :param exchange:
         :return:
         """
-        logging.info('Grabbing full ist of stocks from Exchange.\n Exchange code:"%s' % exchange)
-        list_of_stocks = self.get_stocks_from_exchange(exchange)
+        logging.info('Grabbing full ist of stocks from Exchange.\n Exchange code:"%s' % self.exchange)
+        list_of_stocks = self.get_stocks_from_exchange(self.exchange)
         iter_onj = iter(list_of_stocks)
         while True:
             try:
                 element = next(iter_onj)
-                self.add_company(element, exchange)
+                self.add_company(element, self.exchange)
             except StopIteration:
                 break
 

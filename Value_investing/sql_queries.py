@@ -46,6 +46,30 @@ prod_create_company_table = """ CREATE TABLE IF NOT EXISTS companyInfo (
                                                        exchange text NOT NULL
                                                    ); """
 
+
+prod_create_historic_prices_table = """ CREATE TABLE IF NOT EXISTS historicPrices (
+                                                       id integer PRIMARY KEY,
+                                                       eoddate integer NOT NULL,
+                                                       ticker text NOT NULL,
+                                                       open real NOT NULL,
+                                                       high real NOT NULL,
+                                                       low real NOT NULL,
+                                                       close real NOT NULL,
+                                                       adjustedClose real NOT NULL,
+                                                       volume integer NOT NULL,
+                                                       FOREIGN KEY (ticker)
+                                                                REFERENCES companyInfo (ticker)
+                                                   ); """
+
+
+prod_insert_historic_prices = """
+INSERT INTO historicPrices(eoddate,ticker,open,high,low,close,adjustedClose,
+            volume)
+                              VALUES(?,?,?,?,?,?,?,?)
+"""
+
+prod_delete_prices  = "DELETE FROM historicPrices"
+
 test_create_companyInfo_table = """ CREATE TABLE IF NOT EXISTS TestCompanyInfo (
                                                        id integer PRIMARY KEY,
                                                        name text NOT NULL,
