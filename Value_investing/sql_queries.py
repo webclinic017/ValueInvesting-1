@@ -1,7 +1,6 @@
-
-prod_get_all_stocks_per_exhg = """
+prod_get_all_stocks_per_exhg = r"""
                     SELECT * FROM companyInfo i
-                    where i.exchange= '%s';
+                    where i.exchange= '%s' and description not like '%%ADR%%';
                     """
 
 prod_insert_rankedResult = ''' INSERT INTO rankedResult(rundate,ticker,EBIT,TotalFixedAsset,WorkingCapital,EnterpriseValue,EarningYield,
@@ -46,7 +45,6 @@ prod_create_company_table = """ CREATE TABLE IF NOT EXISTS companyInfo (
                                                        exchange text NOT NULL
                                                    ); """
 
-
 prod_create_historic_prices_table = """ CREATE TABLE IF NOT EXISTS historicPrices (
                                                        id integer PRIMARY KEY,
                                                        eoddate integer NOT NULL,
@@ -61,6 +59,27 @@ prod_create_historic_prices_table = """ CREATE TABLE IF NOT EXISTS historicPrice
                                                                 REFERENCES companyInfo (ticker)
                                                    ); """
 
+prod_piotroski_fscore = """  CREATE TABLE IF NOT EXISTS "PiotroskiFscore" (
+                                "id"	INTEGER NOT NULL,
+                                "ticker"	TEXT NOT NULL,
+                                "version"	INTEGER NOT NULL,
+                                "score"	INTEGER NOT NULL,
+                                PRIMARY KEY("id" AUTOINCREMENT),
+                                FOREIGN KEY("ticker")
+                                        REFERENCES companyInfo (ticker)
+);
+"""
+
+test_piotroski_fscore = """  CREATE TABLE IF NOT EXISTS "PiotroskiFscoreTest" (
+                                "id"	INTEGER NOT NULL,
+                                "ticker"	TEXT NOT NULL,
+                                "version"	INTEGER NOT NULL,
+                                "score"	INTEGER NOT NULL,
+                                PRIMARY KEY("id" AUTOINCREMENT),
+                                FOREIGN KEY("ticker")
+                                        REFERENCES companyInfo (ticker)
+);
+"""
 
 prod_insert_historic_prices = """
 INSERT INTO historicPrices(eoddate,ticker,open,high,low,close,adjustedClose,
@@ -68,7 +87,15 @@ INSERT INTO historicPrices(eoddate,ticker,open,high,low,close,adjustedClose,
                               VALUES(?,?,?,?,?,?,?,?)
 """
 
-prod_delete_prices  = "DELETE FROM historicPrices"
+prod_delete_prices = "DELETE FROM historicPrices"
+
+prod_get_all_prices_per_ticker = """
+                    SELECT * FROM historicPrices where ticker = '%s';
+                    """
+
+prod_get_all_prices = """
+                    SELECT * FROM historicPrices;
+                    """
 
 test_create_companyInfo_table = """ CREATE TABLE IF NOT EXISTS TestCompanyInfo (
                                                        id integer PRIMARY KEY,
@@ -97,7 +124,7 @@ test__create_ranked_result_table = """ CREATE TABLE IF NOT EXISTS TestRankedResu
                                                                       REFERENCES TestCompanyInfo (ticker) 
                                                               ); """
 
-test_insert_companyInfo= """
+test_insert_companyInfo = """
 INSERT INTO TestCompanyInfo(id,name,ticker,description,industry,marketCapitalization,exchange)
                   select id, name,ticker,description,industry,marketCapitalization,exchange from companyInfo c
                   WHERE c.exchange = 'US' LIMIT 5
@@ -115,8 +142,3 @@ test_get_all_stocks_per_exhg = """
 
 test_delete_all_in_rankedResult = "DELETE FROM TestRankedResult"
 test_delete_all_in_companyInfo = "DELETE FROM TestCompanyInfo"
-
-
-
-
-

@@ -7,6 +7,8 @@ import logging
 import sys
 from sql_queries import *
 from stock_database import StockDatabase
+from momentum import Momentum
+from Piotroski import PiotroskiScore
 
 API_PERIOD = 60
 API_CALL = 50
@@ -38,6 +40,14 @@ class ValueInvesting:
         self.stock_db = StockDatabase()
         self.rundate = int(datetime.now().strftime('%Y%m%d'))
         self.set_exchange()
+        logging.getLogger().setLevel(logging.INFO)
+        self.momentum_price = Momentum()
+        self.piotroski_score = PiotroskiScore()
+        self.final_rank_by_momemtum = list()
+        self.six_month_price_index = dict()
+        self.three_month_price_index = dict()
+        self.twelve_month_price_index = dict()
+        self.final_rank_with_momentum = list()
 
     def main(self):
         self.apply_magic_formula()
@@ -57,6 +67,15 @@ class ValueInvesting:
         else:
             self.main()
 
+    def screen_stock(self, version=False):
+        list_of_stock = self.stock_db.get_stocks_per_exchange(self.exchange, version)
+        stock_list = list()
+        for stock in list_of_stock:
+            score = self.piotroski_score.calculate_score(stock[2])
+            if score > 6:
+                stock_list.append(stock)
+        return stock_list
+
     def test_run(self):
         self.stock_db.create_test_tables()
         self.apply_magic_formula(True)
@@ -69,8 +88,7 @@ class ValueInvesting:
 
     def if_exchange_in_db(self):
         statement = """
-                    SELECT * FROM companyInfo i
-                    where i.exchange=%s;
+                    SELECT * FROM companyInfo i where i.exchange=%s
                     """ % self.exchange
         result = self.stock_db.execute_command(statement)
         if len(result) > 0:
@@ -111,13 +129,22 @@ class ValueInvesting:
         As per the magic formula, the final rank is the summation of the roc and earning yield rank
         :return:
         """
+        i = 0
+        j = 0
+        k = 0
         final_rank_list = dict()
+        final_list_with_momentum = dict()
         for key, value in self.result.items():
             final_rank = value["earning_rank"] + value["roc_rank"]
             final_rank_list[key] = final_rank
             final_rank_temp = sorted(final_rank_list.items(), key=lambda x: (x[1]))
 
-        i = 0
+        while j < 10:
+            six_month = self.result[final_rank_temp[j][0]]["price_6_months_index"]
+            final_list_with_momentum[final_rank_temp[j][0]] = six_month
+            final_temp_six_mths = sorted(final_list_with_momentum.items(), key=lambda x: (x[1]),reverse=True)
+            j += 1
+
         size = len(final_rank_temp)
         while i < size:
             company = final_rank_temp[i][0]
@@ -126,9 +153,18 @@ class ValueInvesting:
             self.final_rank.append(company_dict)
             i += 1
 
+        momentum_size = len(final_temp_six_mths)
+        while k < momentum_size:
+            company = final_temp_six_mths[k][0]
+            company_dict = self.result[company]
+            company_dict["final_rank"] = final_temp_six_mths[k][1]
+            self.final_rank_with_momentum.append(company_dict)
+            k += 1
+
+
     def apply_magic_formula(self, version=False):
         logging.info("Applying Formula on Stock")
-        list_of_stocks = self.stock_db.get_stocks_per_exchange(self.exchange, version)
+        list_of_stocks = self.screen_stock(version)
         if len(list_of_stocks) == 0:
             self.get_stock_via_api()
         for stock in list_of_stocks:
@@ -157,17 +193,23 @@ class ValueInvesting:
             enterprise_value = self.get_enterprise_value(key_statistic)
             roc = round((ebit / (total_fixed_asset + working_capital)) * 100, 2)
             earning_yield = round((ebit / enterprise_value) * 100, 2)
+            momentum_3_months = self.momentum_price.get_3_month_return(symbol)
+            momentum_6_months = self.momentum_price.get_6_month_return(symbol)
             self.earning_yield_rank[symbol] = earning_yield
+            self.six_month_price_index[symbol] = momentum_6_months
+            self.three_month_price_index[symbol] = momentum_3_months
             earning_str = str(earning_yield) + r'%'
             roc_str = str(roc) + r'%'
             self.roc_rank[symbol] = roc
+
             self.result[symbol] = {"name": company["description"], "symbol": symbol,
                                    "marketCapitilisation": company["marketCapitalization"],
                                    "industry": company["industry"], "ebit": ebit,
                                    "total_fixed_asset": total_fixed_asset
                 , "working_capital": working_capital, "enterprise_value": enterprise_value,
                                    "earning_yield": earning_str,
-                                   "roc": roc_str}
+                                   "roc": roc_str, "price_3_months_index": momentum_3_months,
+                                   "price_6_months_index": momentum_6_months}
         except Exception as e:
             pass
 
@@ -320,6 +362,8 @@ class ValueInvesting:
                             self.large_cap_companies_result)
             self.write_file(r"C:\Users\user\Google Drive\value_investing\prod\final_ranked_stocks.json",
                             self.final_rank)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\prod\final_ranked_with_momentum_stocks.json",
+                            self.final_rank_with_momentum)
         else:
             self.write_file(r"C:\Users\user\Google Drive\value_investing\test\small_cap_ranked_stocks.json",
                             self.small_cap_companies_result)
@@ -329,15 +373,17 @@ class ValueInvesting:
                             self.large_cap_companies_result)
             self.write_file(r"C:\Users\user\Google Drive\value_investing\test\final_ranked_stocks.json",
                             self.final_rank)
+            self.write_file(r"C:\Users\user\Google Drive\value_investing\test\final_ranked_with_momentum_stocks.json",
+                            self.final_rank_with_momentum)
 
     def save_result(self, version=False):
         try:
             for stock in self.final_rank:
                 result = (
-                self.rundate, stock['symbol'], stock['ebit'], stock['total_fixed_asset'], stock['working_capital'],
-                stock['enterprise_value'], stock['earning_yield'], stock['roc'], stock['earning_rank'],
-                stock['roc_rank'],
-                stock['final_rank'])
+                    self.rundate, stock['symbol'], stock['ebit'], stock['total_fixed_asset'], stock['working_capital'],
+                    stock['enterprise_value'], stock['earning_yield'], stock['roc'], stock['earning_rank'],
+                    stock['roc_rank'],
+                    stock['final_rank'])
                 self.stock_db.insert_into_ranked_result(result, version)
         except Exception as e:
             print(e)
